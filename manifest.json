@@ -1,0 +1,12 @@
+{
+  "name": "DowntownGosHelper",
+  "short_name": "GosHelper",
+  "description": "Законы Downtown, ИИ-ассистент, калькулятор ареста и документооборот Минюста",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#07050e",
+  "theme_color": "#07050e",
+  "lang": "ru",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
