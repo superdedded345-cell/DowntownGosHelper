@@ -1,0 +1,102 @@
+name: Проверка законов на форуме
+
+on:
+  schedule:
+    - cron: "17 4 * * *"      # каждый день в 04:17 по UTC (07:17 по Москве); время можно поменять
+  workflow_dispatch:           # кнопка «Run workflow» для ручного запуска
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: forum-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установка библиотек
+        run: pip install -r forum-bot/requirements.txt
+
+      - name: Проверка форума обычными запросами
+        id: plain
+        continue-on-error: true
+        working-directory: forum-bot
+        run: python monitor.py --site ../index.html --report report.md --apply
+
+      - name: Запасной способ через браузер (если форум режет обычные запросы)
+        id: browser
+        if: steps.plain.outcome == 'failure'
+        working-directory: forum-bot
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+          python monitor.py --site ../index.html --report report.md --apply --browser
+
+      - name: Что нашёл бот
+        id: res
+        run: |
+          # результат берём у того шага, который отработал успешно
+          if [ "${{ steps.plain.outcome }}" = "success" ]; then
+            echo "changed=${{ steps.plain.outputs.changed }}" >> "$GITHUB_OUTPUT"
+            echo "problems=$(( ${{ steps.plain.outputs.suspicious || 0 }} + ${{ steps.plain.outputs.failed || 0 }} ))" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=${{ steps.browser.outputs.changed }}" >> "$GITHUB_OUTPUT"
+            echo "problems=$(( ${{ steps.browser.outputs.suspicious || 0 }} + ${{ steps.browser.outputs.failed || 0 }} ))" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Предложить обновление (Pull Request)
+        if: steps.res.outputs.changed == 'true' && vars.AUTO_COMMIT != 'true'
+        run: |
+          git config user.name "law-bot"
+          git config user.email "law-bot@users.noreply.github.com"
+          git checkout -B forum-update
+          git add index.html
+          git commit -m "Обновление законов по форуму"
+          git push --force origin forum-update
+          n=$(gh pr list --head forum-update --state open --json number -q '.[0].number')
+          if [ -n "$n" ]; then
+            gh pr edit "$n" --body-file forum-bot/report.md
+          else
+            gh pr create --base "${{ github.event.repository.default_branch }}" --head forum-update \
+              --title "Законы на форуме изменились" --body-file forum-bot/report.md
+          fi
+
+      - name: Сразу обновить сайт (если включено AUTO_COMMIT)
+        if: steps.res.outputs.changed == 'true' && vars.AUTO_COMMIT == 'true'
+        run: |
+          git config user.name "law-bot"
+          git config user.email "law-bot@users.noreply.github.com"
+          git add index.html
+          git commit -m "Обновление законов по форуму"
+          git push origin HEAD
+
+      - name: Сообщить о проблемах (тема не скачалась или изменилась вёрстка)
+        if: steps.res.outputs.problems != '0' && steps.res.outputs.problems != ''
+        run: |
+          n=$(gh issue list --state open --search "Бот: проверьте форум in:title" --json number -q '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body-file forum-bot/report.md
+          else
+            gh issue create --title "Бот: проверьте форум" --body-file forum-bot/report.md
+          fi
+
+      - name: Сохранить отчёт
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: forum-bot/report.md
+          if-no-files-found: ignore
